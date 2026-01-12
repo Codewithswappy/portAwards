@@ -1,0 +1,636 @@
+// ============================================
+// DevRank - Production PostgreSQL Schema
+// Portfolio Ranking & Discovery Platform
+// ============================================
+// Stack: Next.js + Prisma + Neon PostgreSQL
+// Designed for 1M+ users with optimized indexes
+// ============================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearchPostgres"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+/// User role - Developer or Recruiter/Client
+enum UserRole {
+  DEV // Developer seeking opportunities
+  CLIENT // Recruiter or hiring manager
+}
+
+/// Developer experience level
+enum ExperienceLevel {
+  JUNIOR // 0-2 years
+  MID // 2-5 years
+  SENIOR // 5+ years
+}
+
+/// Types of interactions users can have
+enum InteractionType {
+  LIKE
+  SAVE
+  SHARE
+}
+
+/// Leaderboard time periods
+enum LeaderboardPeriod {
+  DAILY
+  WEEKLY
+  MONTHLY
+  ALL_TIME
+}
+
+/// Notification types for user alerts
+enum NotificationType {
+  LIKE
+  COMMENT
+  FOLLOW
+  MENTION
+  RANK_UP
+  ACHIEVEMENT
+}
+
+// ============================================
+// CORE USER MODEL
+// ============================================
+
+/// User account - supports both developers and recruiters
+model User {
+  id String @id @default(cuid())
+
+  // Identity
+  name          String
+  username      String    @unique
+  email         String    @unique
+  emailVerified DateTime?
+
+  // Profile
+  avatarUrl   String?
+  bio         String?
+  location    String?
+  website     String?
+  githubUrl   String?
+  linkedinUrl String?
+  twitterUrl  String?
+
+  // Role & Status
+  role       UserRole @default(DEV)
+  isVerified Boolean  @default(false) // Blue checkmark
+  isPro      Boolean  @default(false) // Premium subscription
+
+  // Reputation & Ranking
+  reputationScore Int @default(0) // Accumulated reputation points
+
+  // Timestamps
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastActiveAt DateTime @default(now())
+
+  // ─────────────────────────────────────────
+  // Relations
+  // ─────────────────────────────────────────
+
+  // One-to-One: Each developer has one portfolio
+  portfolio Portfolio?
+
+  // One-to-Many: User's showcase posts
+  showcasePosts ShowcasePost[]
+
+  // One-to-Many: Interactions made by this user
+  portfolioInteractions PortfolioInteraction[]
+  postInteractions      PostInteraction[]
+
+  // One-to-Many: Comments written by this user
+  comments Comment[]
+
+  // One-to-Many: View events (when user views portfolios)
+  viewEvents ViewEvent[]
+
+  // One-to-Many: Notifications received
+  notifications Notification[]
+
+  // Many-to-Many: Following/Followers
+  following Follow[] @relation("Following")
+  followers Follow[] @relation("Followers")
+
+  // One-to-Many: User's achievements/badges
+  achievements UserAchievement[]
+
+  // ─────────────────────────────────────────
+  // Indexes for fast queries
+  // ─────────────────────────────────────────
+  @@index([email])
+  @@index([username])
+  @@index([role])
+  @@index([reputationScore(sort: Desc)]) // For user leaderboards
+  @@index([createdAt(sort: Desc)])
+  @@index([lastActiveAt(sort: Desc)])
+}
+
+// ============================================
+// PORTFOLIO MODEL
+// ============================================
+
+/// Developer portfolio - one per developer
+model Portfolio {
+  id String @id @default(cuid())
+
+  // Owner relation
+  userId String @unique // One portfolio per user
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Portfolio Content
+  title   String? // Portfolio headline
+  tagline String? // Short description (max 160 chars)
+  url     String // Portfolio website URL
+  story   String? @db.Text // Long-form "About Me" section
+
+  // Technical Details
+  stack           String[] // Array of technologies ["React", "Node.js", "PostgreSQL"]
+  experienceLevel ExperienceLevel @default(JUNIOR)
+  yearsOfExp      Int             @default(0)
+
+  // Media
+  snapshotUrl String? // Cloudinary screenshot of portfolio
+  ogImageUrl  String? // Open Graph image for social sharing
+
+  // Ranking & Discovery
+  rankScore    Float @default(0) // Calculated ranking score
+  viewCount    Int   @default(0) // Total views
+  likeCount    Int   @default(0) // Denormalized like count
+  saveCount    Int   @default(0) // Denormalized save count
+  shareCount   Int   @default(0) // Denormalized share count
+  commentCount Int   @default(0) // Denormalized comment count
+
+  // Engagement Metrics
+  avgViewDuration Float @default(0) // Average time spent viewing (seconds)
+  bounceRate      Float @default(0) // % of quick exits
+
+  // Status
+  isPublished Boolean @default(true) // Public visibility
+  isFeatured  Boolean @default(false) // Editor's pick
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ─────────────────────────────────────────
+  // Relations
+  // ─────────────────────────────────────────
+  interactions         PortfolioInteraction[]
+  comments             Comment[]
+  viewEvents           ViewEvent[]
+  leaderboardSnapshots LeaderboardSnapshot[]
+
+  // ─────────────────────────────────────────
+  // Indexes for ranking & filtering
+  // ─────────────────────────────────────────
+  @@index([userId])
+  @@index([rankScore(sort: Desc)]) // Primary ranking sort
+  @@index([likeCount(sort: Desc)]) // Sort by popularity
+  @@index([viewCount(sort: Desc)]) // Sort by views
+  @@index([experienceLevel]) // Filter by experience
+  @@index([stack]) // Filter by tech stack (GIN index)
+  @@index([createdAt(sort: Desc)]) // Sort by newest
+  @@index([isFeatured, rankScore(sort: Desc)]) // Featured portfolios
+  @@index([isPublished, rankScore(sort: Desc)]) // Public leaderboard
+}
+
+// ============================================
+// SHOWCASE POST MODEL (Dribbble-style)
+// ============================================
+
+/// Showcase posts - project highlights, work samples
+model ShowcasePost {
+  id String @id @default(cuid())
+
+  // Owner relation
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Content
+  title     String
+  caption   String? @db.Text
+  mediaUrl  String // Cloudinary image/video URL
+  mediaType String  @default("image") // "image" | "video"
+  publicId  String? // Cloudinary public ID for deletion
+
+  // Metadata
+  tags       String[] // ["ui-design", "react", "dashboard"]
+  projectUrl String? // Link to live project
+  sourceUrl  String? // Link to source code
+
+  // Engagement (denormalized for fast reads)
+  likeCount    Int @default(0)
+  commentCount Int @default(0)
+  saveCount    Int @default(0)
+  shareCount   Int @default(0)
+  viewCount    Int @default(0)
+
+  // Status
+  isPublished Boolean @default(true)
+  isFeatured  Boolean @default(false)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ─────────────────────────────────────────
+  // Relations
+  // ─────────────────────────────────────────
+  interactions PostInteraction[]
+  comments     Comment[]
+
+  // ─────────────────────────────────────────
+  // Indexes
+  // ─────────────────────────────────────────
+  @@index([userId])
+  @@index([tags]) // Filter by tags
+  @@index([likeCount(sort: Desc)]) // Popular posts
+  @@index([createdAt(sort: Desc)]) // Newest posts
+  @@index([isPublished, createdAt(sort: Desc)]) // Public feed
+  @@index([isFeatured, likeCount(sort: Desc)]) // Featured posts
+}
+
+// ============================================
+// PORTFOLIO INTERACTION MODEL
+// ============================================
+
+/// Tracks likes, saves, shares on portfolios
+/// Prevents duplicate interactions via unique constraint
+model PortfolioInteraction {
+  id String @id @default(cuid())
+
+  // Who interacted
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // What was interacted with
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  // Type of interaction
+  type InteractionType
+
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  // ─────────────────────────────────────────
+  // CRITICAL: Prevent duplicate interactions
+  // One user can only LIKE, SAVE, or SHARE once per portfolio
+  // ─────────────────────────────────────────
+  @@unique([userId, portfolioId, type])
+  // ─────────────────────────────────────────
+  // Indexes
+  // ─────────────────────────────────────────
+  @@index([userId])
+  @@index([portfolioId])
+  @@index([type])
+  @@index([portfolioId, type]) // Count likes/saves/shares
+  @@index([createdAt(sort: Desc)])
+}
+
+// ============================================
+// POST INTERACTION MODEL
+// ============================================
+
+/// Tracks likes, saves, shares on showcase posts
+/// Same pattern as PortfolioInteraction
+model PostInteraction {
+  id String @id @default(cuid())
+
+  // Who interacted
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // What was interacted with
+  postId String
+  post   ShowcasePost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  // Type of interaction
+  type InteractionType
+
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  // ─────────────────────────────────────────
+  // CRITICAL: Prevent duplicate interactions
+  // ─────────────────────────────────────────
+  @@unique([userId, postId, type])
+  // ─────────────────────────────────────────
+  // Indexes
+  // ─────────────────────────────────────────
+  @@index([userId])
+  @@index([postId])
+  @@index([type])
+  @@index([postId, type])
+  @@index([createdAt(sort: Desc)])
+}
+
+// ============================================
+// COMMENT MODEL
+// ============================================
+
+/// Comments on portfolios and posts
+/// Uses polymorphic pattern (optional foreign keys)
+model Comment {
+  id String @id @default(cuid())
+
+  // Author
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Target (one of these will be set)
+  portfolioId String?
+  portfolio   Portfolio? @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  postId String?
+  post   ShowcasePost? @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  // Content
+  content String @db.Text
+
+  // Nested comments (replies)
+  parentId String?
+  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies  Comment[] @relation("CommentReplies")
+
+  // Engagement
+  likeCount Int @default(0)
+
+  // Status
+  isEdited  Boolean @default(false)
+  isDeleted Boolean @default(false) // Soft delete for nested comments
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ─────────────────────────────────────────
+  // Indexes
+  // ─────────────────────────────────────────
+  @@index([userId])
+  @@index([portfolioId])
+  @@index([postId])
+  @@index([parentId])
+  @@index([createdAt(sort: Desc)])
+}
+
+// ============================================
+// VIEW EVENT MODEL (Analytics)
+// ============================================
+
+/// Tracks how long users view a portfolio
+/// Used for engagement scoring and analytics
+model ViewEvent {
+  id String @id @default(cuid())
+
+  // Viewer (optional - anonymous users can view)
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // What was viewed
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  // Engagement metrics
+  duration    Int     @default(0) // Time spent in seconds
+  scrollDepth Float   @default(0) // 0-100% of page scrolled
+  scrolled    Boolean @default(false) // Did user scroll at all?
+
+  // Session data
+  sessionId String? // Group events by session
+  referrer  String? // Where did the user come from
+  device    String? // "desktop" | "mobile" | "tablet"
+  country   String? // ISO country code
+
+  // Timestamp
+  createdAt DateTime @default(now())
+
+  // ─────────────────────────────────────────
+  // Indexes for analytics queries
+  // ─────────────────────────────────────────
+  @@index([portfolioId])
+  @@index([userId])
+  @@index([createdAt(sort: Desc)])
+  @@index([portfolioId, createdAt(sort: Desc)]) // Portfolio analytics
+  @@index([sessionId])
+}
+
+// ============================================
+// LEADERBOARD SNAPSHOT MODEL
+// ============================================
+
+/// Stores periodic ranking snapshots for historical tracking
+/// Enables "rank over time" charts and weekly/monthly boards
+model LeaderboardSnapshot {
+  id String @id @default(cuid())
+
+  // Portfolio being ranked
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  // Ranking data at this point in time
+  rank  Int // Position (1, 2, 3...)
+  score Float // Score at this moment
+
+  // Time period
+  period LeaderboardPeriod
+
+  // Computed metrics at snapshot time
+  deltaRank  Int   @default(0) // Change from previous (+3, -1)
+  deltaScore Float @default(0) // Score change
+
+  // Timestamp
+  createdAt DateTime @default(now())
+
+  // Ensure only one snapshot per portfolio per period per day
+  @@unique([portfolioId, period, createdAt])
+  // ─────────────────────────────────────────
+  // Indexes for leaderboard queries
+  // ─────────────────────────────────────────
+  @@index([portfolioId])
+  @@index([period, createdAt(sort: Desc)]) // Latest by period
+  @@index([period, rank]) // Top N by period
+  @@index([createdAt(sort: Desc)])
+}
+
+// ============================================
+// FOLLOW RELATIONSHIP MODEL
+// ============================================
+
+/// Many-to-many self-referencing follow relationship
+model Follow {
+  id String @id @default(cuid())
+
+  // The user who is following
+  followerId String
+  follower   User   @relation("Following", fields: [followerId], references: [id], onDelete: Cascade)
+
+  // The user being followed
+  followingId String
+  following   User   @relation("Followers", fields: [followingId], references: [id], onDelete: Cascade)
+
+  // Timestamp
+  createdAt DateTime @default(now())
+
+  // ─────────────────────────────────────────
+  // Prevent duplicate follows
+  // ─────────────────────────────────────────
+  @@unique([followerId, followingId])
+  // ─────────────────────────────────────────
+  // Indexes
+  // ─────────────────────────────────────────
+  @@index([followerId])
+  @@index([followingId])
+  @@index([createdAt(sort: Desc)])
+}
+
+// ============================================
+// NOTIFICATION MODEL
+// ============================================
+
+/// User notifications for engagement events
+model Notification {
+  id String @id @default(cuid())
+
+  // Recipient
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Notification content
+  type    NotificationType
+  title   String
+  message String
+
+  // Related entities (for deep linking)
+  actorId     String? // User who triggered the notification
+  portfolioId String?
+  postId      String?
+  commentId   String?
+
+  // Status
+  isRead Boolean @default(false)
+
+  // Timestamps
+  createdAt DateTime  @default(now())
+  readAt    DateTime?
+
+  // ─────────────────────────────────────────
+  // Indexes
+  // ─────────────────────────────────────────
+  @@index([userId, isRead]) // Unread notifications
+  @@index([userId, createdAt(sort: Desc)]) // Notification feed
+  @@index([createdAt(sort: Desc)])
+}
+
+// ============================================
+// ACHIEVEMENT MODEL
+// ============================================
+
+/// Achievement/Badge definitions
+model Achievement {
+  id String @id @default(cuid())
+
+  // Identity
+  slug        String @unique // "first-like", "100-views"
+  name        String // "First Like"
+  description String // "Received your first like"
+
+  // Visual
+  iconUrl String? // Badge icon
+  color   String? // Badge color
+
+  // Progression
+  tier   Int @default(1) // Bronze (1), Silver (2), Gold (3)
+  points Int @default(10) // Reputation points awarded
+
+  // Requirements (JSON for flexibility)
+  // e.g., { "type": "like_count", "value": 100 }
+  requirement Json?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  // ─────────────────────────────────────────
+  // Relations
+  // ─────────────────────────────────────────
+  userAchievements UserAchievement[]
+
+  // ─────────────────────────────────────────
+  // Indexes
+  // ─────────────────────────────────────────
+  @@index([slug])
+  @@index([tier])
+}
+
+/// User's earned achievements
+model UserAchievement {
+  id String @id @default(cuid())
+
+  // Who earned it
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // What was earned
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  // When earned
+  earnedAt DateTime @default(now())
+
+  // ─────────────────────────────────────────
+  // Prevent duplicate achievements
+  // ─────────────────────────────────────────
+  @@unique([userId, achievementId])
+  // ─────────────────────────────────────────
+  // Indexes
+  // ─────────────────────────────────────────
+  @@index([userId])
+  @@index([achievementId])
+  @@index([earnedAt(sort: Desc)])
+}
+
+// ============================================
+// REPORT MODEL (Moderation)
+// ============================================
+
+/// Content reports for moderation
+model Report {
+  id String @id @default(cuid())
+
+  // Reporter
+  reporterId String
+
+  // What's being reported
+  portfolioId String?
+  postId      String?
+  commentId   String?
+  userId      String? // Reporting a user
+
+  // Report details
+  reason      String // "spam", "inappropriate", "harassment"
+  description String? @db.Text
+
+  // Status
+  status     String    @default("pending") // "pending", "reviewed", "resolved"
+  reviewedBy String?
+  reviewedAt DateTime?
+  resolution String?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  // ─────────────────────────────────────────
+  // Indexes
+  // ─────────────────────────────────────────
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+}
