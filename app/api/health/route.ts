@@ -3,7 +3,7 @@ import { db, checkDBConnection } from "@/server/db";
 import { redis, cacheKeys, cacheTTL } from "@/server/redis";
 import { uploadImage, deleteAsset, type UploadResult } from "@/server/cloudinary";
 
-/**
+/** 
  * Health Check API Route
  *
  * GET /api/health
